@@ -53,7 +53,7 @@
 
 | **用途** | **命令** | **说明** |
 |---|---|---|
-| 运行论文格式检查 | `python scripts/lint_thesis.py` | 检查 `chapters/*.md` 中的绝对图片路径、未闭合块级公式及公式内中文标点。 |
+| 运行论文一致性检查 | `python scripts/lint_thesis.py` | 检查开题报告与各章的图片路径、块级公式、公式标点、引用键，以及 README、outline 与开题报告的题目一致性和旧方向残留。 |
 | 检查 Pandoc 是否可用 | `pandoc --version` | 导出前确认 Pandoc 已安装并可从命令行调用。 |
 | 导出单章 Word 文档 | `pandoc chapters/03_methodology.md --citeproc --bibliography references.bib -o output/03_methodology.docx` | 将第 $3$ 章导出为 `.docx`；需先创建 `output/` 目录，并确保引用键已写入 `references.bib`。 |
 | 导出完整论文 Word 文档 | `pandoc chapters/01_introduction.md chapters/02_background.md chapters/03_methodology.md chapters/04_implementation.md chapters/05_experiments.md chapters/06_conclusion.md --citeproc --bibliography references.bib -o output/thesis.docx` | 按章节顺序合并导出；仅在六个章节文件均已创建后执行。 |
