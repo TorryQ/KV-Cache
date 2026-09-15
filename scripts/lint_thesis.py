@@ -8,6 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 CONTENT_FILES = [ROOT / "proposals" / "thesis_proposal.md"]
 CONTENT_FILES.extend(sorted((ROOT / "chapters").glob("*.md")))
+TERMINOLOGY_FILES = [ROOT / "README.md", ROOT / "outline.md", *CONTENT_FILES]
 
 
 def display_path(path: Path) -> str:
@@ -84,6 +85,25 @@ def check_markdown_rules() -> int:
         if claim in proposal:
             errors.append(f"proposals/thesis_proposal.md 仍包含旧研究方向表述：{claim}")
 
+    deprecated_terms = {
+        "令牌": "token",
+        "提示词": "prompt",
+        "预填充": "Prefill",
+        "解码": "Decode",
+        "注意力汇聚点": "Attention Sink",
+        "键值头": "KV head",
+        "分页缓存": "Paged KV Cache",
+        "连续批处理": "Continuous Batching",
+    }
+    for path in TERMINOLOGY_FILES:
+        content = path.read_text(encoding="utf-8")
+        relative = display_path(path)
+        for deprecated, preferred in deprecated_terms.items():
+            if deprecated in content:
+                errors.append(
+                    f"{relative} 使用了非约定术语“{deprecated}”，应改为“{preferred}”"
+                )
+
     for message in errors:
         print(f"[错误] {message}")
     for message in warnings:
@@ -93,7 +113,10 @@ def check_markdown_rules() -> int:
         print(f"检查失败：{len(errors)} 个错误，{len(warnings)} 个提示。")
         return 1
 
-    print(f"检查通过：已检查 {len(CONTENT_FILES)} 个内容文件，{len(known_bib_keys)} 个参考文献条目。")
+    print(
+        f"检查通过：已检查 {len(TERMINOLOGY_FILES)} 个 Markdown 文件，"
+        f"{len(known_bib_keys)} 个参考文献条目。"
+    )
     if warnings:
         print(f"另有 {len(warnings)} 个非阻断提示。")
     return 0

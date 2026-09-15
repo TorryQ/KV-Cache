@@ -3,25 +3,25 @@
 **题目：**资源受限环境下大语言模型长文本推理的 $KV$ Cache 压缩与优化方法研究
 **英文题目：**Research on $KV$ Cache Compression and Optimization for Long-Context Inference of Large Language Models in Resource-Constrained Environments
 **目标篇幅：**35--45 页，约 25,000--35,000 字。  
-**论证主线：**围绕资源受限环境中长序列自回归推理的缓存容量与访存瓶颈，分析 $K_{\text{cache}}$ 与 $V_{\text{cache}}$ 的令牌重要性、统计异质性及误差传播规律，设计由缓存选择、混合精度量化和系统优化协同构成的压缩机制，并通过实验验证质量、显存和时延的平衡。
+**论证主线：**围绕资源受限环境中长序列自回归推理的缓存容量与访存瓶颈，分析 $K_{\text{cache}}$ 与 $V_{\text{cache}}$ 的 token 重要性、统计异质性及误差传播规律，设计由缓存选择、混合精度量化和系统优化协同构成的压缩机制，并通过实验验证质量、显存和时延的平衡。
 
 ## 1. 全局符号系统表
 
 | **符号** | **名称（中文）** | **名称（英文）** | **定义或取值范围** |
 |---:|---|---|---|
 | $B$ | 批大小 | Batch Size | 同时参与推理的请求数。 |
-| $S$ | 序列长度 | Sequence Length | 当前上下文中的令牌数；在预填充阶段亦可记为 $L$。 |
-| $T$ | 生成步数 | Generation Steps | 解码阶段已生成或待生成的令牌步数。 |
-| $N$ | 网络层数 | Number of Layers | Transformer 解码器层数。 |
-| $H$ | 注意力头数 | Number of Attention Heads | 每层多头注意力中的头数。 |
-| $H_{kv}$ | 键值头数 | Number of Key-Value Heads | 分组查询注意力中键、值头数。 |
+| $S$ | 序列长度 | Sequence Length | 当前上下文中的 token 数。 |
+| $T$ | 生成步数 | Generation Steps | Decode 阶段已生成或待生成的 token 步数。 |
+| $N$ | 网络层数 | Number of Layers | Transformer decoder 的层数。 |
+| $H$ | attention head 数 | Number of Attention Heads | 每层多头注意力中的 attention head 总数。 |
+| $H_{kv}$ | KV head 数 | Number of KV Heads | GQA 或 MQA 中的 key/value head 数。 |
 | $D$ | 隐藏维度 | Hidden Dimension | 模型隐藏状态维度。 |
-| $d_k$ | 注意力头维度 | Head Dimension | 单个键或查询头的向量维度，通常满足 $D=H d_k$。 |
+| $d_k$ | head dimension | Head Dimension | 单个 key 或 query head 的向量维度，通常满足 $D=H d_k$。 |
 | $X$ | 实值张量 | Real-valued Tensor | 待量化的通用浮点张量。 |
 | $K^{(l)}$ | 第 $l$ 层键张量 | Key Tensor at Layer $l$ | 第 $l$ 层注意力机制产生的键表示。 |
 | $V^{(l)}$ | 第 $l$ 层值张量 | Value Tensor at Layer $l$ | 第 $l$ 层注意力机制产生的值表示。 |
-| $K_{\text{cache}}^{(l)}$ | 第 $l$ 层键缓存 | Key Cache at Layer $l$ | 已处理令牌的键向量缓存。 |
-| $V_{\text{cache}}^{(l)}$ | 第 $l$ 层值缓存 | Value Cache at Layer $l$ | 已处理令牌的值向量缓存。 |
+| $K_{\text{cache}}^{(l)}$ | 第 $l$ 层键缓存 | Key Cache at Layer $l$ | 已处理 token 的 key 向量缓存。 |
+| $V_{\text{cache}}^{(l)}$ | 第 $l$ 层值缓存 | Value Cache at Layer $l$ | 已处理 token 的 value 向量缓存。 |
 | $Q$ | 查询张量 | Query Tensor | 当前步参与注意力计算的查询表示。 |
 | $A$ | 注意力权重 | Attention Weights | 由缩放点积和 Softmax 函数计算得到的概率分布。 |
 | $Y$ | 注意力输出 | Attention Output | $AV$ 的结果。 |
@@ -32,20 +32,20 @@
 | $Z_q$ | 量化零点 | Quantization Zero-point | 非对称量化中的整数偏移量。 |
 | $q_{\min},q_{\max}$ | 整数边界 | Quantization Bounds | $b$ 位有符号或无符号整数的可表示边界。 |
 | $g$ | 量化粒度 | Quantization Granularity | 分组大小或共享量化参数的元素集合。 |
-| $\mathcal{G}$ | 分组集合 | Group Set | 张量按通道、令牌或块划分得到的量化组集合。 |
+| $\mathcal{G}$ | 分组集合 | Group Set | 张量按通道、token 或 block 划分得到的量化组集合。 |
 | $\mathcal{P}_b$ | 位宽策略 | Bit-width Policy | 将量化组映射至位宽 $b$ 的策略。 |
-| $\mathcal{R}$ | 缓存保留策略 | Cache Retention Policy | 决定哪些缓存令牌或分组被保留、压缩或淘汰的策略。 |
+| $\mathcal{R}$ | 缓存保留策略 | Cache Retention Policy | 决定哪些缓存 token 或分组被保留、压缩或淘汰的策略。 |
 | $\eta$ | 重要性权重 | Importance Weight | 缓存重要性在风险得分中的非负权重。 |
 | $\mathrm{imp}(X_g)$ | 缓存重要性函数 | Cache Importance Function | 描述量化组 $g$ 对后续注意力计算重要程度的函数。 |
 | $\tau$ | 异常值阈值 | Outlier Threshold | 判定高幅值或高敏感度元素的阈值。 |
-| $\mathcal{O}$ | 异常值集合 | Outlier Set | 需保留高精度表示的元素、通道或令牌集合。 |
+| $\mathcal{O}$ | 异常值集合 | Outlier Set | 需保留高精度表示的元素、通道或 token 集合。 |
 | $\epsilon_X$ | 张量量化误差 | Tensor Quantization Error | $\epsilon_X=X-\hat{X}$。 |
 | $\mathcal{L}_{\text{err}}$ | 误差目标 | Error Objective | 用于评价量化重构或输出偏差的损失函数。 |
 | $M$ | 缓存显存占用 | Cache Memory Footprint | $KV$ Cache 及元数据占用的显存。 |
 | $C$ | 缓存容量 | Cache Capacity | 设备可分配给缓存的显存上限。 |
 | $\rho_M$ | 显存压缩率 | Memory Compression Ratio | 相对高精度缓存的显存节省比例。 |
-| $t_{\text{prefill}}$ | 预填充时延 | Prefill Latency | 处理输入上下文的耗时。 |
-| $t_{\text{decode}}$ | 解码时延 | Decode Latency | 单步或累计生成阶段耗时。 |
+| $t_{\text{prefill}}$ | Prefill 时延 | Prefill Latency | Prefill 阶段处理输入上下文的耗时。 |
+| $t_{\text{decode}}$ | Decode 时延 | Decode Latency | Decode 阶段单步或累计生成的耗时。 |
 | $\Delta t$ | 时延变化 | Latency Difference | 相对基线的时延差值。 |
 | $\mathrm{PPL}$ | 困惑度 | Perplexity | 语言建模质量评价指标。 |
 | $\Delta \mathrm{PPL}$ | 困惑度增量 | Perplexity Degradation | 量化模型相对高精度模型的困惑度变化。 |
@@ -55,32 +55,33 @@
 
 | **中文术语** | **English Term** | **本文约定** |
 |---|---|---|
-| 键值缓存 | $KV$ Cache | 指自回归推理中跨令牌保存的 $K_{\text{cache}}$ 与 $V_{\text{cache}}$。 |
-| 预填充 | Prefill | 对输入提示词进行并行前向计算并建立缓存的阶段。 |
-| 解码 | Decode | 逐令牌生成并持续读取、追加缓存的阶段。 |
-| 混合精度量化 | Mixed-precision Quantization | 对不同层、张量、通道、令牌或组采用不同位宽的量化方案。 |
+| KV Cache | Key-Value Cache | 指自回归推理中跨 token 保存的 $K_{\text{cache}}$ 与 $V_{\text{cache}}$。正文统一写作“$KV$ Cache”。 |
+| token | Token | 模型处理文本时使用的基本离散单元；正文统一保留英文，不采用中文直译。 |
+| Prefill | Prefill | 对输入 prompt 进行并行前向计算并建立 $KV$ Cache 的阶段。 |
+| Decode | Decode | 逐 token 生成并持续读取、追加 $KV$ Cache 的阶段。 |
+| 混合精度量化 | Mixed-precision Quantization | 对不同层、张量、通道、token 或组采用不同位宽的量化方案。 |
 | 对称量化 | Symmetric Quantization | 零点通常固定为零的量化映射。 |
 | 非对称量化 | Asymmetric Quantization | 同时使用尺度 $S_q$ 与零点 $Z_q$ 的量化映射。 |
 | 按通道量化 | Per-channel Quantization | 每个通道或头维度通道独立共享量化参数。 |
-| 按令牌量化 | Per-token Quantization | 每个令牌向量独立共享量化参数。 |
+| per-token 量化 | Per-token Quantization | 每个 token 向量独立共享量化参数。 |
 | 分组量化 | Group-wise Quantization | 按固定大小 $g$ 划分元素并为每组设置量化参数。 |
-| 注意力汇聚点 | Attention Sink | 在长上下文中持续获得较高注意力权重的早期令牌位置。 |
+| Attention Sink | Attention Sink | 在长上下文中持续获得较高注意力权重的早期 token 位置。 |
 | 异常值 | Outliers | 幅值、统计分布或输出敏感度显著偏离主体的元素或分组。 |
 | 离群通道 | Outlier Channel | 含有异常激活尺度或量化敏感度的通道。 |
 | 量化感知校准 | Quantization Calibration | 依据校准数据估计量化参数、阈值或位宽策略的过程。 |
 | 反量化 | Dequantization | 将量化整数恢复为近似浮点值的计算过程。 |
 | 在线量化 | Online Quantization | 缓存写入时即时完成量化。 |
-| 缓存追加 | Cache Append | 解码阶段将新令牌的键和值写入既有缓存。 |
-| 分页缓存 | Paged Cache | 将缓存划分为固定大小物理页并按需映射的管理机制。 |
-| 连续批处理 | Continuous Batching | 动态合并不同请求的预填充和解码执行方式。 |
-| 分组查询注意力 | Grouped-Query Attention | 多个查询头共享较少键值头的注意力结构。 |
-| 多查询注意力 | Multi-Query Attention | 所有查询头共享单个或极少数键值头的注意力结构。 |
+| 缓存追加 | Cache Append | Decode 阶段将新 token 的 key 和 value 写入既有缓存。 |
+| Paged KV Cache | Paged KV Cache | 将 $KV$ Cache 划分为固定大小的物理 page 并按需映射的管理机制。 |
+| Continuous Batching | Continuous Batching | 动态合并不同请求的 Prefill 与 Decode 任务的批处理方式。 |
+| 分组查询注意力（GQA） | Grouped-Query Attention | 多个 query head 共享较少 KV head 的注意力结构。 |
+| 多查询注意力（MQA） | Multi-Query Attention | 所有 query head 共享单个或极少数 KV head 的注意力结构。 |
 | 峰值显存 | Peak Memory | 推理过程中观测到的最大显存占用。 |
-| 长文本推理 | Long-context Inference | 序列长度 $S$ 较大时的模型推理过程。 |
-| 缓存压缩 | Cache Compression | 通过令牌选择、淘汰、低比特表示或其组合降低 $KV$ Cache 资源开销的机制。 |
-| 缓存选择 | Cache Selection | 按令牌或注意力头的重要性保留部分缓存状态的策略。 |
+| 长上下文推理 | Long-context Inference | 序列长度 $S$ 较大时的模型推理过程。 |
+| 缓存压缩 | Cache Compression | 通过 token 选择、淘汰、低比特表示或其组合降低 $KV$ Cache 资源开销的机制。 |
+| 缓存选择 | Cache Selection | 按 token 或 attention head 的重要性保留部分缓存状态的策略。 |
 | 缓存淘汰 | Cache Eviction | 在缓存容量受限时移除低优先级历史状态的策略。 |
-| 缓存保留策略 | Cache Retention Policy | 决定缓存令牌或分组保留、压缩与淘汰方式的规则。 |
+| 缓存保留策略 | Cache Retention Policy | 决定缓存 token 或分组保留、压缩与淘汰方式的规则。 |
 | 缓存重要性 | Cache Importance | 衡量缓存状态对后续注意力计算与生成质量影响程度的属性。 |
 | 资源受限环境 | Resource-constrained Environment | 显存容量、计算能力或存储带宽受限的模型推理部署环境。 |
 
@@ -101,13 +102,13 @@
 #### 1.1 研究背景与问题提出（1.0--1.2 页，800--1,000 字）
 
 - 核心论点：长文本推理中 $M\propto BNSH_{kv}d_k$，$KV$ Cache 成为显存扩展的主要约束。
-- 核心论点：解码阶段反复访问历史缓存，缓存选择、量化和访问优化均需同时控制带宽开销与输出误差。
+- 核心论点：Decode 阶段反复访问历史缓存，缓存选择、量化和访问优化均需同时控制带宽开销与输出误差。
 - 图表规划：图 $1$-$1$“自回归推理中 $KV$ Cache 随 $S$ 线性增长示意图”。
 
 #### 1.2 研究意义与应用价值（0.7--0.9 页，550--700 字）
 
 - 核心论点：缓存压缩可提升有限显存设备上的并发数、可支持上下文长度与部署可行性。
-- 核心论点：令牌选择、混合精度和系统优化可从容量、表示和访问三个层面缓解资源约束。
+- 核心论点：token 选择、混合精度和系统优化可从容量、表示和访问三个层面缓解资源约束。
 - 图表规划：表 $1$-$1$“高精度缓存与不同量化位宽的理论显存占用对比”。
 
 #### 1.3 国内外研究现状（1.2--1.5 页，900--1,200 字）
@@ -133,8 +134,8 @@
 #### 2.1 Transformer 自回归推理机制（1.5--1.8 页，1,100--1,400 字）
 
 - 核心公式：$A=\mathrm{Softmax}(QK^\top/\sqrt{d_k})$，$Y=AV$。
-- 核心论点：预填充并行计算与解码逐步计算具有不同的计算和访存特征。
-- 图表规划：图 $2$-$1$“预填充与解码阶段的计算数据流”。
+- 核心论点：Prefill 并行计算与 Decode 逐步计算具有不同的计算和访存特征。
+- 图表规划：图 $2$-$1$“Prefill 与 Decode 阶段的计算数据流”。
 
 #### 2.2 $KV$ Cache 的组织形式与显存模型（1.5--1.8 页，1,100--1,400 字）
 
@@ -145,19 +146,19 @@
 #### 2.3 $KV$ Cache 压缩方法与量化粒度（1.5--1.8 页，1,100--1,400 字）
 
 - 核心公式：$q=\mathrm{clip}(\mathrm{round}(X/S_q)+Z_q,q_{\min},q_{\max})$，$\hat{X}=S_q(q-Z_q)$。
-- 核心论点：缓存选择、窗口淘汰与按张量、按通道、按令牌、分组量化在信息保留、参数开销和硬件友好性方面存在差异。
+- 核心论点：缓存选择、窗口淘汰与 per-tensor、per-channel、per-token、group-wise 量化在信息保留、参数开销和硬件友好性方面存在差异。
 - 图表规划：表 $2$-$1$“不同 $KV$ Cache 压缩粒度与机制的质量—资源特征”。
 
 #### 2.4 长上下文下的缓存统计特性与误差传播（1.8--2.2 页，1,400--1,800 字）
 
 - 核心论点：$K_{\text{cache}}$ 的量化误差通过注意力分数影响 $A$，$V_{\text{cache}}$ 的量化误差直接作用于 $Y$。
 - 核心公式：$\Delta Y\approx \Delta A\,V+A\,\Delta V$，用于分解输出偏差来源。
-- 图表规划：图 $2$-$3$“键误差与值误差的注意力传播路径”；图 $2$-$4$“层、头和令牌维度的统计分布示例”。
+- 图表规划：图 $2$-$3$“键误差与值误差的注意力传播路径”；图 $2$-$4$“层、attention head 和 token 维度的统计分布示例”。
 
 #### 2.5 相关缓存压缩与推理系统研究综述（1.5--2.0 页，1,200--1,600 字）
 
-- 核心论点：从缓存选择、离线校准、在线量化、异常值处理、分页缓存和融合算子六类技术维度展开比较。
-- 核心论点：指出现有方案可能存在重要令牌误判、固定精度僵化、尺度元数据占用和动态请求碎片化等不足。
+- 核心论点：从缓存选择、离线校准、在线量化、异常值处理、Paged KV Cache 和融合算子六类技术维度展开比较。
+- 核心论点：指出现有方案可能存在重要 token 误判、固定精度僵化、尺度元数据占用和动态请求碎片化等不足。
 - 图表规划：表 $2$-$2$“相关工作比较矩阵”；引用仅使用已核验的 $[@citation_key]$ 占位键并在定稿时对应 `references.bib`。
 
 ### 第 $3$ 章 $KV$ Cache 压缩与优化机制设计（8--10 页，7,000--8,500 字）
@@ -171,19 +172,19 @@
 #### 3.2 缓存重要性、敏感度建模与统计分组（1.5--1.8 页，1,200--1,500 字）
 
 - 核心公式：$r_g=\alpha\,\mathrm{range}(X_g)+\beta\,\mathrm{var}(X_g)+\gamma\,\mathrm{sens}(X_g)+\eta\,\mathrm{imp}(X_g)$，其中 $\mathrm{imp}(X_g)$ 表示缓存重要性。
-- 核心论点：以层、$K/V$ 类型、头、通道和令牌块为候选维度，同时确定缓存保留优先级与量化分组。
+- 核心论点：以层、$K/V$ 类型、attention head、通道和 token block 为候选维度，同时确定缓存保留优先级与量化分组。
 - 图表规划：图 $3$-$1$“缓存重要性统计、风险评分与分组形成流程”。
 
 #### 3.3 缓存选择与混合位宽协同策略（1.8--2.2 页，1,500--1,800 字）
 
 - 核心公式：$b_g=\mathcal{P}_b(r_g)$，并令 $b_g\in\{b_{\text{low}},b_{\text{mid}},b_{\text{high}}\}$。
-- 核心论点：高重要性令牌优先保留，高风险组采用较高位宽，低优先级或低风险组采用低位宽或受控淘汰。
+- 核心论点：高重要性 token 优先保留，高风险组采用较高位宽，低优先级或低风险组采用低位宽或受控淘汰。
 - 图表规划：算法 $3$-$1$“缓存选择与混合位宽分配算法”；图 $3$-$2$“重要性、风险得分与压缩决策关系”。
 
-#### 3.4 异常值保护与注意力汇聚点处理（1.5--1.8 页，1,200--1,500 字）
+#### 3.4 异常值保护与 Attention Sink 处理（1.5--1.8 页，1,200--1,500 字）
 
 - 核心公式：$\mathcal{O}=\{x\mid |x|>\tau\ \lor\ \mathrm{sens}(x)>\tau_s\}$。
-- 核心论点：对异常值、离群通道及注意力汇聚点关联令牌设置高精度旁路或独立尺度，降低关键上下文信息失真。
+- 核心论点：对异常值、离群通道及 Attention Sink 关联 token 设置高精度旁路或独立尺度，降低关键上下文信息失真。
 - 图表规划：图 $3$-$3$“主体低比特存储与异常值旁路结构”；表 $3$-$2$“不同保护对象的存储格式和访问路径”。
 
 #### 3.5 压缩误差推导与质量影响分析（1.8--2.2 页，1,500--1,900 字）
@@ -208,7 +209,7 @@
 
 #### 4.2 推理框架接入与执行流程（1.2--1.5 页，900--1,100 字）
 
-- 核心论点：在预填充和解码路径中插入缓存选择、压缩写入、读取和反量化逻辑，保证对上层模型接口透明。
+- 核心论点：在 Prefill 和 Decode 路径中插入缓存选择、压缩写入、读取和反量化逻辑，保证对上层模型接口透明。
 - 核心论点：说明不同注意力实现对张量布局、掩码计算和批处理调度的接口要求。
 - 图表规划：图 $4$-$2$“框架接入前后的调用时序”；表 $4$-$1$“关键接口与张量形状”。
 
@@ -234,7 +235,7 @@
 
 #### 5.1 实验目标、环境与复现设置（1.2--1.5 页，900--1,200 字）
 
-- 核心论点：明确验证维度为模型质量、峰值显存、预填充时延、解码时延、吞吐量和稳定性。
+- 核心论点：明确验证维度为模型质量、峰值显存、Prefill 时延、Decode 时延、吞吐量和稳定性。
 - 核心论点：完整记录模型版本、硬件、软件栈、随机种子、批大小 $B$、序列长度 $S$ 与生成配置。
 - 图表规划：表 $5$-$1$“软硬件实验环境”；表 $5$-$2$“模型、数据集和推理参数”；未知数据以 `[待填数据: GPU 型号]` 标注。
 
@@ -247,7 +248,7 @@
 #### 5.3 模型质量与长文本精度评估（2.0--2.4 页，1,500--2,000 字）
 
 - 核心论点：在语言建模和长上下文任务上报告 $\mathrm{PPL}$、$\Delta \mathrm{PPL}$、$\mathrm{Acc}$ 或任务得分，并按 $S$ 分段分析。
-- 核心论点：区分平均误差与长序列尾部退化，检查注意力汇聚点和关键检索位置的质量变化。
+- 核心论点：区分平均误差与长序列尾部退化，检查 Attention Sink 和关键检索位置的质量变化。
 - 图表规划：表 $5$-$4$“各方法质量指标对比”；图 $5$-$1$“$\Delta \mathrm{PPL}$ 随 $S$ 变化曲线”；使用 `[待填数据: 方法A在$S=\cdots$时的PPL]`。
 
 #### 5.4 显存占用、压缩率与可扩展性分析（1.8--2.2 页，1,400--1,800 字）
@@ -260,18 +261,18 @@
 
 - 核心论点：分别分析 $t_{\text{prefill}}$、单步 $t_{\text{decode}}$、端到端时延及吞吐量，避免用单一指标替代系统性能。
 - 核心论点：解释不同 $B$ 与 $S$ 下，显存带宽节省、反量化代价和内核分支开销之间的变化关系。
-- 图表规划：表 $5$-$6$“预填充、解码和吞吐量对比”；图 $5$-$4$“时延随 $B$、$S$ 变化的曲线或热图”。
+- 图表规划：表 $5$-$6$“Prefill、Decode 和吞吐量对比”；图 $5$-$4$“时延随 $B$、$S$ 变化的曲线或热图”。
 
 #### 5.6 消融实验与机制验证（2.0--2.4 页，1,500--2,000 字）
 
-- 核心论点：逐项移除缓存选择、混合位宽、异常值保护、注意力汇聚点处理、细粒度尺度及算子融合，验证各组件贡献。
+- 核心论点：逐项移除缓存选择、混合位宽、异常值保护、Attention Sink 处理、细粒度尺度及算子融合，验证各组件贡献。
 - 核心公式：$\Delta \mathcal{M}_i=\mathcal{M}_{\text{full}}-\mathcal{M}_{\text{without }i}$，其中 $\mathcal{M}$ 可取质量、显存或时延指标。
 - 图表规划：表 $5$-$7$“组件消融结果”；图 $5$-$5$“位宽、阈值 $\tau$ 与质量—显存帕累托曲线”。
 
 #### 5.7 误差案例、局限性与讨论（1.0--1.3 页，800--1,000 字）
 
-- 核心论点：分析质量下降显著的样本、层或令牌位置，关联异常值密度、注意力分布和位宽决策。
-- 核心论点：讨论方法在模型架构变化、极端长度、动态批处理和硬件差异下的适用边界。
+- 核心论点：分析质量下降显著的样本、层或 token 位置，关联异常值密度、注意力分布和位宽决策。
+- 核心论点：讨论方法在模型架构变化、极端长度、Continuous Batching 和硬件差异下的适用边界。
 - 图表规划：图 $5$-$6$“典型失败案例的注意力或误差热图”；表 $5$-$8$“局限性、成因与缓解措施”。
 
 ### 第 $6$ 章 总结与展望（2 页，1,500--2,000 字）

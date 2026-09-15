@@ -16,10 +16,10 @@
 
 ### 技术路线简述
 
-1. 分析 $K_{\text{cache}}$ 与 $V_{\text{cache}}$ 的容量增长、访问特征、令牌重要性与量化敏感度。
-2. 结合重要令牌选择或淘汰、混合精度量化、异常值与 Attention Sink 保护，构建协同的缓存压缩策略。
-3. 在推理框架中实现压缩缓存追加、分页内存管理、融合反量化注意力与动态请求调度。
-4. 通过模型质量、长文本召回、峰值显存、预填充时延、解码时延、吞吐量及消融实验进行综合评估。
+1. 分析 $K_{\text{cache}}$ 与 $V_{\text{cache}}$ 的容量增长、访问特征、token 重要性与量化敏感度。
+2. 结合重要 token 选择或淘汰、混合精度量化、异常值与 Attention Sink 保护，构建协同的缓存压缩策略。
+3. 在推理框架中实现压缩缓存追加、Paged KV Cache 内存管理、融合反量化注意力与动态请求调度。
+4. 通过模型质量、长上下文召回、峰值显存、Prefill 时延、Decode 时延、吞吐量及消融实验进行综合评估。
 
 ## 章节编写进度
 
@@ -39,10 +39,10 @@
 
 - [ ] 环境搭建：记录模型版本、推理框架、$GPU$ 型号、驱动版本、$CUDA$ 版本、依赖版本与随机种子。
 - [ ] 模拟量化验证：完成 $K_{\text{cache}}$、$V_{\text{cache}}$ 的量化—反量化误差测试，覆盖位宽、粒度、尺度 $S_q$ 和零点 $Z_q$ 配置。
-- [ ] 缓存选择与淘汰验证：比较全量缓存、滑动窗口、重要令牌保留与混合压缩配置的质量和资源开销。
+- [ ] 缓存选择与淘汰验证：比较全量缓存、滑动窗口、重要 token 保留与混合压缩配置的质量和资源开销。
 - [ ] 显存基准测试：在不同批大小 $B$、序列长度 $S$ 与并发配置下采集理论和实测峰值显存。
-- [ ] LongBench 精度评测：固定模型与解码参数，对高精度、统一位宽和混合精度基线执行同一评测流程。
-- [ ] 时延与吞吐量测试：分别统计预填充时延 $t_{\text{prefill}}$、解码时延 $t_{\text{decode}}$ 和端到端吞吐量。
+- [ ] LongBench 精度评测：固定模型与 Decode 参数，对高精度、统一位宽和混合精度基线执行同一评测流程。
+- [ ] 时延与吞吐量测试：分别统计 Prefill 时延 $t_{\text{prefill}}$、Decode 时延 $t_{\text{decode}}$ 和端到端吞吐量。
 - [ ] 消融实验：分别移除缓存选择、混合位宽、异常值保护、Attention Sink 处理及算子融合模块。
 - [ ] 画图脚本：生成显存—序列长度、质量—压缩率、时延—批大小及消融结果图；图像输出至 `figures/`。
 - [ ] 数据核验：所有结果表均注明实验配置；未取得的数值使用 `[待填数据: 实验名称与指标]` 占位。
@@ -53,7 +53,7 @@
 
 | **用途** | **命令** | **说明** |
 |---|---|---|
-| 运行论文一致性检查 | `python scripts/lint_thesis.py` | 检查开题报告与各章的图片路径、块级公式、公式标点、引用键，以及 README、outline 与开题报告的题目一致性和旧方向残留。 |
+| 运行论文一致性检查 | `python scripts/lint_thesis.py` | 检查开题报告与各章的图片路径、块级公式、公式标点、引用键，以及 README、outline 与开题报告的题目、行业术语和研究方向一致性。 |
 | 检查 Pandoc 是否可用 | `pandoc --version` | 导出前确认 Pandoc 已安装并可从命令行调用。 |
 | 导出单章 Word 文档 | `pandoc chapters/03_methodology.md --citeproc --bibliography references.bib -o output/03_methodology.docx` | 将第 $3$ 章导出为 `.docx`；需先创建 `output/` 目录，并确保引用键已写入 `references.bib`。 |
 | 导出完整论文 Word 文档 | `pandoc chapters/01_introduction.md chapters/02_background.md chapters/03_methodology.md chapters/04_implementation.md chapters/05_experiments.md chapters/06_conclusion.md --citeproc --bibliography references.bib -o output/thesis.docx` | 按章节顺序合并导出；仅在六个章节文件均已创建后执行。 |
